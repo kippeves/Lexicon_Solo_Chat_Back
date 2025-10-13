@@ -2,5 +2,9 @@
   "$schema": "https://www.partykit.io/schema.json",
   "name": "server",
   "main": "src/server.ts",
+  "parties": {
+    "rooms": "src/rooms.ts",
+    "users": "src/users.ts"
+  },
   "compatibilityDate": "2025-10-09"
 }
