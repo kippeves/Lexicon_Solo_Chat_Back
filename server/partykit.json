@@ -4,7 +4,8 @@
   "main": "src/server.ts",
   "parties": {
     "rooms": "src/rooms.ts",
-    "users": "src/users.ts"
+    "users": "src/users.ts",
+    "room": "src/room.ts"
   },
   "compatibilityDate": "2025-10-09"
 }
