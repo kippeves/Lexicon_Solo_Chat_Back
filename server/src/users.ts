@@ -1,30 +1,14 @@
-import { SimpleJwksCache } from "aws-jwt-verify/jwk";
-import { verifyJwt } from "aws-jwt-verify/jwt-verifier";
 import type * as Party from "partykit/server";
 import type * as z from "zod";
+import { tryDecodeToken } from "../utils";
 import {
 	type ConnectionState,
 	ConnectionStateSchema,
 } from "./schemas/connection-state";
 import type { UsersMessageSchema } from "./schemas/messages";
-import { type User, UserSchema } from "./schemas/user";
-
-const DEFAULT_ENDPOINT = "https://kippeves.kinde.com";
-const jwksCache = new SimpleJwksCache();
+import { UserSchema } from "./schemas/user";
 
 export type Message = z.infer<typeof UsersMessageSchema>;
-
-async function tryDecodeToken(token: string) {
-	return await verifyJwt(
-		token,
-		`${DEFAULT_ENDPOINT}/.well-known/jwks`,
-		{
-			issuer: DEFAULT_ENDPOINT,
-			audience: null,
-		},
-		jwksCache.getJwk.bind(jwksCache), // use JWKS cache (optional)
-	);
-}
 
 export default class UsersServer implements Party.Server {
 	constructor(readonly room: Party.Room) {
@@ -32,7 +16,6 @@ export default class UsersServer implements Party.Server {
 	}
 
 	readonly party: Party.Room;
-	users: Map<string, User> = new Map();
 
 	static async onBeforeConnect(request: Party.Request, _lobby: Party.Lobby) {
 		try {
@@ -40,9 +23,7 @@ export default class UsersServer implements Party.Server {
 			const token = new URL(request.url).searchParams.get("token");
 			if (!token) return new Response("Unauthorized", { status: 401 });
 			// verify the JWT (in this case using clerk)
-			const payload = await tryDecodeToken(token);
-			// pass any information to the onConnect handler in headers (optional)
-			payload.aud && request.headers.set("X-User-ID", payload.aud?.toString());
+			await tryDecodeToken(token);
 			// forward the request onwards on onConnect
 			return request;
 		} catch {
@@ -51,21 +32,19 @@ export default class UsersServer implements Party.Server {
 		}
 	}
 
-	onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
+	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		const token = new URL(ctx.request.url).searchParams.get("token");
 		if (!token) return;
 
-		tryDecodeToken(token).then((payload) => {
-			const { success, data } = UserSchema.safeParse({
-				id: payload.jti,
-				name: payload.name || payload.username,
-				avatar: payload.picture,
-			});
-
-			if (!success) return;
-			shallowMergeConnectionState(conn, { user: data });
-			this.updateUsers();
+		const payload = await tryDecodeToken(token);
+		const { success, data } = UserSchema.safeParse({
+			id: payload.sub,
+			name: payload.name || payload.username,
+			avatar: payload.picture,
 		});
+		if (!success) conn.close();
+		shallowMergeConnectionState(conn, { user: data });
+		this.updateUsers();
 	}
 
 	onClose(): void | Promise<void> {
