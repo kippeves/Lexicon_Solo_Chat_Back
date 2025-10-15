@@ -1,11 +1,11 @@
 {
   "$schema": "https://www.partykit.io/schema.json",
-  "name": "server",
-  "main": "src/server.ts",
+  "name": "chat",
+  "main": "src/index.ts",
   "parties": {
-    "rooms": "src/rooms.ts",
-    "users": "src/users.ts",
-    "room": "src/room.ts"
+    "lobby": "src/lobbies/lobby.ts",
+    "users": "src/lobbies/users.ts",
+    "room": "src/lobbies/room.ts"
   },
   "compatibilityDate": "2025-10-09"
 }
