@@ -1,35 +1,19 @@
 import type * as Party from "partykit/server";
 import type * as z from "zod";
-import { tryDecodeToken } from "../utils";
+import { tryDecodeToken } from "../../utils";
 import {
 	type ConnectionState,
 	ConnectionStateSchema,
-} from "./schemas/connection-state";
-import type { UsersMessageSchema } from "./schemas/messages";
-import { UserSchema } from "./schemas/user";
+} from "../schemas/connection-state";
+import type { UsersMessageSchema } from "../schemas/messages";
+import { UserSchema } from "../schemas/user";
+import ChatServer from "../types/chat-server";
 
 export type Message = z.infer<typeof UsersMessageSchema>;
 
-export default class UsersServer implements Party.Server {
+export default class UsersServer extends ChatServer {
 	constructor(readonly room: Party.Room) {
-		this.party = room;
-	}
-
-	readonly party: Party.Room;
-
-	static async onBeforeConnect(request: Party.Request, _lobby: Party.Lobby) {
-		try {
-			// get token from request query stringc
-			const token = new URL(request.url).searchParams.get("token");
-			if (!token) return new Response("Unauthorized", { status: 401 });
-			// verify the JWT (in this case using clerk)
-			await tryDecodeToken(token);
-			// forward the request onwards on onConnect
-			return request;
-		} catch {
-			// short-circuit the request before it's forwarded to the party
-			return new Response("Unauthorized", { status: 401 });
-		}
+		super(room);
 	}
 
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
@@ -57,7 +41,7 @@ export default class UsersServer implements Party.Server {
 
 	updateUsers() {
 		const presenceMessage = JSON.stringify(this.getPresenceMessage());
-		for (const connection of this.party.getConnections()) {
+		for (const connection of this.room.getConnections()) {
 			connection.send(presenceMessage);
 		}
 	}
@@ -65,7 +49,7 @@ export default class UsersServer implements Party.Server {
 	getUsers() {
 		const users = new Map<string, z.infer<typeof UserSchema>>();
 
-		for (const connection of this.party.getConnections()) {
+		for (const connection of this.room.getConnections()) {
 			const state = getConnectionState(connection);
 			if (state?.user) {
 				users.set(state.user.id, state.user);
@@ -78,7 +62,7 @@ export default class UsersServer implements Party.Server {
 	getPresenceMessage() {
 		return {
 			type: "presence",
-			payload: { users: [...this.getUsers()] },
+			payload: { users: this.getUsers() },
 		} satisfies Message;
 	}
 
@@ -129,5 +113,3 @@ function getConnectionState(connection: Party.Connection) {
 		return null;
 	}
 }
-
-UsersServer satisfies Party.Worker;
