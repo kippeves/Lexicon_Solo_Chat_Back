@@ -8,6 +8,7 @@ import {
 	LobbyRoomSchema,
 } from "../schemas/lobby";
 import ChatServer from "../types/chat-server";
+import { getUserFromContext, shallowMergeConnectionState } from "../utils";
 
 export default class LobbyServer extends ChatServer {
 	rooms: LobbyRoom[];
@@ -16,11 +17,15 @@ export default class LobbyServer extends ChatServer {
 		this.rooms = [];
 	}
 
+	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
+		const user = await getUserFromContext(ctx);
+		if (!user) return;
+		shallowMergeConnectionState(conn, { user });
+	}
+
 	async onRequest(req: Party.Request) {
 		if (req.method === "POST") {
-			const token =
-				req.headers.get("Authorization") ||
-				new URL(req.url).searchParams.get("token");
+			const token = req.headers.get("Authorization");
 			if (!token) return new Response("Unauthorized", { status: 401 });
 			// verify the JWT (in this case using clerk)
 			const payload = await tryDecodeToken(token);
@@ -31,7 +36,6 @@ export default class LobbyServer extends ChatServer {
 				);
 			const user = payloadUser.user;
 			if (!user) return new Response("");
-			const _ = await req.json();
 			const id = createId(this.rooms.map((room) => room.id));
 			const newRoom = LobbyRoomSchema.decode({
 				id: id,
@@ -40,14 +44,16 @@ export default class LobbyServer extends ChatServer {
 			});
 			this.rooms.push(newRoom);
 			const update: LobbyMessage = { type: "create", payload: newRoom };
-			return new Response(JSON.stringify(update));
+			const asString = JSON.stringify(update);
+			this.room.broadcast(asString);
+			return new Response(asString);
 		}
 		return new Response();
 	}
 
-	onMessage(message: string, sender: Party.Connection) {
+	onMessage(message: string, _sender: Party.Connection) {
 		const obj = JSON.parse(message);
-		const { success, data, error } = LobbyMessageSchema.safeParse(obj);
+		const { success, data } = LobbyMessageSchema.safeParse(obj);
 		if (!success) return new Response();
 		switch (data.type) {
 			case "create":
