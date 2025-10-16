@@ -1,13 +1,13 @@
 import type * as Party from "partykit/server";
 import type * as z from "zod";
-import { tryDecodeToken } from "../../utils";
-import {
-	type ConnectionState,
-	ConnectionStateSchema,
-} from "../schemas/connection-state";
 import type { UsersMessageSchema } from "../schemas/messages";
-import { UserSchema } from "../schemas/user";
+import type { UserSchema } from "../schemas/user";
 import ChatServer from "../types/chat-server";
+import {
+	getConnectionState,
+	getUserFromContext,
+	shallowMergeConnectionState,
+} from "../utils";
 
 export type Message = z.infer<typeof UsersMessageSchema>;
 
@@ -17,17 +17,9 @@ export default class UsersServer extends ChatServer {
 	}
 
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
-		const token = new URL(ctx.request.url).searchParams.get("token");
-		if (!token) return;
-
-		const payload = await tryDecodeToken(token);
-		const { success, data } = UserSchema.safeParse({
-			id: payload.sub,
-			name: payload.name || payload.username,
-			avatar: payload.picture,
-		});
-		if (!success) conn.close();
-		shallowMergeConnectionState(conn, { user: data });
+		const user = await getUserFromContext(ctx);
+		if (!user) return;
+		shallowMergeConnectionState(conn, { user });
 		this.updateUsers();
 	}
 
@@ -75,41 +67,5 @@ export default class UsersServer extends ChatServer {
 			// ...except for the connection it came from
 			[sender.id],
 		);
-	}
-}
-
-function shallowMergeConnectionState(
-	connection: Party.Connection,
-	state: ConnectionState,
-) {
-	setConnectionState(connection, (prev) => ({ ...prev, ...state }));
-}
-
-function setConnectionState(
-	connection: Party.Connection,
-	state:
-		| ConnectionState
-		| ((prev: ConnectionState | null) => ConnectionState | null),
-) {
-	if (typeof state !== "function") {
-		return connection.setState(state);
-	}
-	connection.setState((prev: unknown) => {
-		const prevParseResult = ConnectionStateSchema.safeParse(prev);
-		if (prevParseResult.success) {
-			return state(prevParseResult.data);
-		} else {
-			return state(null);
-		}
-	});
-}
-
-function getConnectionState(connection: Party.Connection) {
-	const result = ConnectionStateSchema.safeParse(connection.state);
-	if (result.success) {
-		return result.data;
-	} else {
-		setConnectionState(connection, null);
-		return null;
 	}
 }

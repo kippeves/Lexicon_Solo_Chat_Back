@@ -20,7 +20,7 @@ export default class ChatServer implements Party.Server {
 			return new Response("Unauthorized", { status: 401 });
 		}
 	}
-	onConnect(_conn: Party.Connection, _ctx: Party.ConnectionContext) {}
+	async onConnect(_conn: Party.Connection, _ctx: Party.ConnectionContext) {}
 	onMessage(_message: string, _sender: Party.Connection) {}
 }
 
