@@ -16,6 +16,12 @@ export default class UsersServer extends ChatServer {
 		super(room);
 	}
 
+	async onRequest(req: Party.Request) {
+		if (req.method === "GET") {
+			return Response.json(this.getUsers());
+		}
+	}
+
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		const user = await getUserFromContext(ctx);
 		if (!user) return;
