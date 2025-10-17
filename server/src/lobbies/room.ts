@@ -22,24 +22,36 @@ export default class RoomServer extends ChatServer {
 		this.room.broadcast(JSON.stringify(message));
 	}
 
-	onMessage(message: string, sender: Party.Connection): void {
+	async onRequest(req: Party.Request) {
+		if (req.method === "GET") {
+			const messages =
+				(await this.room.storage.get(`room:${this.room.id}`)) ?? [];
+			return Response.json(messages);
+		}
+	}
+
+	async onMessage(message: string, sender: Party.Connection) {
 		const state = getConnectionState(sender);
 		const obj = JSON.parse(message);
 		const { success, data } = ChatRoomEventSchema.safeParse(obj);
 		if (!(state?.user && success)) return;
 		const { type, payload } = data;
+		const roomId = `room:${this.room.id}`;
 		switch (type) {
 			case "user:message": {
-				this.room.broadcast(
-					JSON.stringify({
-						type: "server:message",
-						payload: {
-							user: state?.user,
-							sent: new Date(),
-							message: payload.message,
-						},
-					}),
-				);
+				let messages =
+					(await this.room.storage.get<ChatRoomEvent[]>(roomId)) ?? [];
+				const message = {
+					type: "server:message",
+					payload: {
+						user: state?.user,
+						sent: new Date(),
+						message: payload.message,
+					},
+				} as ChatRoomEvent;
+				messages = [...messages, message];
+				await this.room.storage.put(roomId, messages);
+				this.room.broadcast(JSON.stringify(message));
 				break;
 			}
 		}
