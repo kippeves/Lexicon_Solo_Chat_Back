@@ -11,12 +11,6 @@ import ChatServer from "../types/chat-server";
 import { getUserFromContext, shallowMergeConnectionState } from "../utils";
 
 export default class LobbyServer extends ChatServer {
-	rooms: LobbyRoom[];
-	constructor(readonly room: Party.Room) {
-		super(room);
-		this.rooms = [];
-	}
-
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		const user = await getUserFromContext(ctx);
 		if (!user) return;
@@ -24,10 +18,16 @@ export default class LobbyServer extends ChatServer {
 	}
 
 	async onRequest(req: Party.Request) {
+		const token = req.headers.get("Authorization");
+		if (!token) return new Response("Unauthorized", { status: 401 });
+		if (req.method === "GET") {
+			const URI = new URL(req.url);
+			if (URI.pathname.endsWith("/rooms")) {
+				const rooms = (await this.room.storage.get<LobbyRoom[]>("rooms")) ?? [];
+				return Response.json(rooms);
+			}
+		}
 		if (req.method === "POST") {
-			const token = req.headers.get("Authorization");
-			if (!token) return new Response("Unauthorized", { status: 401 });
-			// verify the JWT (in this case using clerk)
 			const payload = await tryDecodeToken(token);
 			const payloadUser = await tryGetUser(payload);
 			if (!payloadUser?.success)
@@ -36,13 +36,16 @@ export default class LobbyServer extends ChatServer {
 				);
 			const user = payloadUser.user;
 			if (!user) return new Response("");
-			const id = createId(this.rooms.map((room) => room.id));
+			const rooms = (await this.room.storage.get<LobbyRoom[]>("rooms")) ?? [];
+
+			const id = createId(rooms.map((room) => room.id));
 			const newRoom = LobbyRoomSchema.decode({
 				id: id,
 				createdBy: user,
 				users: [],
 			});
-			this.rooms.push(newRoom);
+			const newList = [...rooms, newRoom] as LobbyRoom[];
+			this.room.storage.put<LobbyRoom[]>("rooms", newList);
 			const update: LobbyMessage = { type: "create", payload: newRoom };
 			const asString = JSON.stringify(update);
 			this.room.broadcast(asString);
@@ -51,7 +54,7 @@ export default class LobbyServer extends ChatServer {
 		return new Response();
 	}
 
-	onMessage(message: string, _sender: Party.Connection) {
+	async onMessage(message: string, _sender: Party.Connection) {
 		const obj = JSON.parse(message);
 		const { success, data } = LobbyMessageSchema.safeParse(obj);
 		if (!success) return new Response();
@@ -61,17 +64,29 @@ export default class LobbyServer extends ChatServer {
 			case "close":
 				break;
 			case "join": {
-				const { roomId, user } = data.payload;
-				const searchedRoom = this.rooms.find((room) => room.id === roomId);
-				if (!searchedRoom) break;
-				searchedRoom.users = [...searchedRoom.users, user];
-				this.rooms = [...this.rooms, searchedRoom];
+				const { user } = data.payload;
+				const update = await this.findRoom(this.room.id);
+				if (!update) return;
+				const rooms = (await this.room.storage.get<LobbyRoom[]>("rooms")) ?? [];
+				update.users = [...update.users, user];
+				this.room.storage.put("rooms", [...rooms, update]);
 				this.room.broadcast(JSON.stringify(data));
 				break;
 			}
-			case "leave":
+			case "leave": {
+				const { id, roomId } = data.payload;
+				const update = await this.findRoom(roomId);
+				if (!update) return;
+				const rooms = (await this.room.storage.get<LobbyRoom[]>("rooms")) ?? [];
+				update.users = update.users.filter((u) => u.id !== id);
+				this.room.storage.put("rooms", [...rooms, update]);
 				break;
+			}
 		}
+	}
+	async findRoom(roomId: string) {
+		const rooms = (await this.room.storage.get<LobbyRoom[]>("rooms")) ?? [];
+		return rooms.find((room) => room.id === roomId);
 	}
 }
 
