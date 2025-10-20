@@ -1,5 +1,5 @@
 import type * as Party from "partykit/server";
-import { tryDecodeToken } from "../../utils";
+import { tryDecodeToken } from "../../../utils";
 
 export default class ChatServer implements Party.Server {
 	readonly room: Party.Room;
