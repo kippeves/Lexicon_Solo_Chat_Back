@@ -2,7 +2,10 @@ import type * as Party from "partykit/server";
 import { tryDecodeToken } from "../../utils";
 
 export default class ChatServer implements Party.Server {
-	constructor(readonly room: Party.Room) {}
+	readonly room: Party.Room;
+	constructor(readonly _room: Party.Room) {
+		this.room = _room;
+	}
 	static async onBeforeConnect(request: Party.Request, _lobby: Party.Lobby) {
 		try {
 			// get token from request query string
