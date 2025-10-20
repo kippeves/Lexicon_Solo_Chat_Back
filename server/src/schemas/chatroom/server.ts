@@ -1,5 +1,6 @@
 import z from "zod";
 import { UserSchema } from "../user";
+import { ChatRoomMessageServerSchema } from "./message/server";
 
 export type ChatRoomServerEvent = z.infer<typeof ChatRoomServerEventSchema>;
 
@@ -21,10 +22,11 @@ export const ChatRoomServerEventSchema = z
 	.or(
 		z.object({
 			type: z.literal("message"),
-			payload: z.object({
-				user: UserSchema,
-				sent: z.date(),
-				message: z.string(),
-			}),
+			payload: ChatRoomMessageServerSchema,
+		}),
+	)
+	.or(
+		z.object({
+			type: z.literal("clear"),
 		}),
 	);

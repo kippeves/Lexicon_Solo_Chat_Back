@@ -1,13 +1,10 @@
 import type * as Party from "partykit/server";
 import type * as z from "zod";
 import { tryDecodeToken } from "../../utils";
-import {
-	type ConnectionState,
-	ConnectionStateSchema,
-} from "../schemas/connection-state";
+import { type UserState, UserStateSchema } from "../schemas/connection-state";
 import type { PresenceSchema } from "../schemas/messages";
 import { UserSchema } from "../schemas/user";
-import ChatServer from "../types/chat-server";
+import ChatServer from "./base/chat-server";
 
 export type Message = z.infer<typeof PresenceSchema>;
 
@@ -65,22 +62,20 @@ export default class UsersServer extends ChatServer {
 
 export function shallowMergeConnectionState(
 	connection: Party.Connection,
-	state: ConnectionState,
+	state: UserState,
 ) {
 	setConnectionState(connection, (prev) => ({ ...prev, ...state }));
 }
 
 export function setConnectionState(
 	connection: Party.Connection,
-	state:
-		| ConnectionState
-		| ((prev: ConnectionState | null) => ConnectionState | null),
+	state: UserState | ((prev: UserState | null) => UserState | null),
 ) {
 	if (typeof state !== "function") {
 		return connection.setState(state);
 	}
 	connection.setState((prev: unknown) => {
-		const prevParseResult = ConnectionStateSchema.safeParse(prev);
+		const prevParseResult = UserStateSchema.safeParse(prev);
 		if (prevParseResult.success) {
 			return state(prevParseResult.data);
 		} else {
@@ -90,7 +85,7 @@ export function setConnectionState(
 }
 
 export function getConnectionState(connection: Party.Connection) {
-	const result = ConnectionStateSchema.safeParse(connection.state);
+	const result = UserStateSchema.safeParse(connection.state);
 	if (result.success) {
 		return result.data;
 	} else {

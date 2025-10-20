@@ -32,4 +32,12 @@ export const LobbyServerEventSchema = z
 				id: z.string(),
 			}),
 		}),
+	)
+	.or(
+		z.object({
+			type: z.literal("room"),
+			payload: z.object({
+				room: z.object(LobbyRoomSchema).nullable(),
+			}),
+		}),
 	);

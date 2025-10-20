@@ -1,15 +1,16 @@
 import type * as Party from "partykit/server";
 import { v4 as uuidv4 } from "uuid";
 import { tryDecodeToken, tryGetUser } from "../../utils";
-import type { LobbyClientEvent } from "../schemas/lobby/client";
+import { type UserState, UserStateSchema } from "../schemas/connection-state";
+import { LobbyClientEventSchema } from "../schemas/lobby/client";
 import {
 	type LobbyServerEvent,
 	LobbyServerEventSchema,
 } from "../schemas/lobby/server";
 import { type LobbyRoom, LobbyRoomSchema } from "../schemas/lobbyroom";
 import type { User } from "../schemas/user";
-import ChatServer from "../types/chat-server";
-import { getUserFromContext, shallowMergeConnectionState } from "../utils";
+import { getUserFromContext } from "../utils";
+import ChatServer from "./base/chat-server";
 
 const ROOMS_KEY = "rooms";
 
@@ -20,39 +21,62 @@ export default class LobbyServer extends ChatServer {
 	}
 
 	async onRequest(req: Party.Request) {
-		const token = req.headers.get("Authorization");
-		if (!token) return;
+		const env_key = process.env.API_KEY;
+
+		const URI = new URL(req.url);
 		if (req.method === "GET") {
-			const URI = new URL(req.url);
 			if (URI.pathname.endsWith("/rooms")) {
 				const rooms =
 					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 				return Response.json(rooms);
 			}
 		}
-		if (req.method === "POST") {
-			const payload = await tryDecodeToken(token);
-			const payloadUser = await tryGetUser(payload);
-			if (!payloadUser?.success)
-				return new Response(
-					JSON.stringify({ type: "error", payload: payloadUser?.error }),
-				);
-			const user = payloadUser.user;
-			if (!user) return new Response("");
-			const rooms = (await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 
-			const id = createId(rooms.map((room) => room.id));
-			const newRoom = LobbyRoomSchema.decode({
-				id: id,
-				createdBy: user,
-				users: [],
-			});
-			const newList = [...rooms, newRoom] as LobbyRoom[];
-			await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
-			const update: LobbyClientEvent = { type: "create", payload: newRoom };
-			const asString = JSON.stringify(update);
-			this.room.broadcast(asString);
-			return new Response(asString);
+		if (req.method === "POST") {
+			if (URI.pathname.endsWith("/main/room")) {
+				const api = req.headers.get("X-API-KEY");
+				const api_same = api && api === env_key;
+				if (!api_same) return new Response("Unauthorized", { status: 401 });
+
+				const body = await req.json();
+				const item = LobbyClientEventSchema.safeParse(body);
+				if (!item.success) return new Response("No ID set", { status: 500 });
+				const { type, payload } = item.data;
+				if (type !== "room") return new Response("Bad Event");
+				const rooms =
+					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+				const room = rooms.find((r) => r.id === payload.roomId);
+				return room
+					? Response.json(room)
+					: new Response("Room not found", { status: 400 });
+			}
+			if (URI.pathname.endsWith("/main")) {
+				const token = req.headers.get("Authorization");
+				if (!token) return new Response("Unauthorized", { status: 401 });
+				const payload = await tryDecodeToken(token);
+				const payloadUser = await tryGetUser(payload);
+				if (!payloadUser?.success)
+					return new Response(
+						JSON.stringify({ type: "error", payload: payloadUser?.error }),
+					);
+				const user = payloadUser.user;
+				if (!user) return new Response("");
+				const rooms =
+					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+
+				const id = createId(rooms.map((room) => room.id));
+				const newRoom = LobbyRoomSchema.decode({
+					id: id,
+					createdBy: user,
+					users: [],
+				});
+				const newList = [...rooms, newRoom] as LobbyRoom[];
+				await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
+				const update: LobbyServerEvent = { type: "create", payload: newRoom };
+				const asString = JSON.stringify(update);
+				this.room.broadcast(asString);
+				return new Response(asString);
+			}
 		}
 		return new Response();
 	}
@@ -122,6 +146,30 @@ export default class LobbyServer extends ChatServer {
 			this.room.broadcast(JSON.stringify(message));
 		}
 	}
+}
+
+function shallowMergeConnectionState(
+	connection: Party.Connection,
+	state: UserState,
+) {
+	setConnectionState(connection, (prev) => ({ ...prev, ...state }));
+}
+
+function setConnectionState(
+	connection: Party.Connection,
+	state: UserState | ((prev: UserState | null) => UserState | null),
+) {
+	if (typeof state !== "function") {
+		return connection.setState(state);
+	}
+	connection.setState((prev: unknown) => {
+		const prevParseResult = UserStateSchema.safeParse(prev);
+		if (prevParseResult.success) {
+			return state(prevParseResult.data);
+		} else {
+			return state(null);
+		}
+	});
 }
 
 const createId = (rooms: string[]): string => {
