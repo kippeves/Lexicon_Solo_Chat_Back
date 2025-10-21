@@ -1,9 +1,8 @@
 import type * as Party from "partykit/server";
 import { tryDecodeToken, tryGetUser } from "../../utils";
-import {
-	type ChatRoomClientEvent,
-	ChatRoomClientEventSchema,
-} from "../schemas/chatroom/client";
+import { ChatRoomClientEventSchema } from "../schemas/chatroom/client";
+import type { ChatRoomInitData } from "../schemas/chatroom/init";
+import type { ChatRoomMessageServer } from "../schemas/chatroom/message/server";
 import type { ChatRoomServerEvent } from "../schemas/chatroom/server";
 import { type RoomState, RoomStateSchema } from "../schemas/connection-state";
 import type { LobbyClientEvent } from "../schemas/lobby/client";
@@ -33,25 +32,9 @@ export default class RoomServer extends ChatServer {
 		try {
 			const user = await getUserFromContext(ctx);
 			if (!user) return;
-			const room = this.room.context.parties.lobby.get("main");
-			const clientEvent = {
-				type: "room",
-				payload: { roomId: this.room.id },
-			} as LobbyClientEvent;
-			const API_KEY = process.env.API_KEY;
-			if (API_KEY)
-				room
-					.fetch("/room", {
-						headers: {
-							"X-API-KEY": API_KEY,
-						},
-						method: "POST",
-						body: JSON.stringify(clientEvent),
-					})
-					.then(async (e) => {
-						const room = (await e.json()) as LobbyRoom;
-						shallowMergeConnectionState(conn, { user, room });
-					});
+			await this.getRoom().then((room) => {
+				shallowMergeConnectionState(conn, { user, room });
+			});
 		} catch {
 			// ignore connect errors silently (preserve original behavior)
 		}
@@ -92,7 +75,7 @@ export default class RoomServer extends ChatServer {
 
 				// persist and broadcast
 				const messages =
-					(await this.room.storage.get<ChatRoomClientEvent[]>(
+					(await this.room.storage.get<ChatRoomServerEvent[]>(
 						this.storageKey,
 					)) ?? [];
 				messages.push(chatEvent);
@@ -146,25 +129,50 @@ export default class RoomServer extends ChatServer {
 					};
 
 					const messages =
-						(await this.room.storage.get<ChatRoomClientEvent[]>(
+						(await this.room.storage.get<ChatRoomServerEvent[]>(
 							this.storageKey,
 						)) ?? [];
 					messages.push(chatEvent);
 					await this.room.storage.put(this.storageKey, messages);
 					this.broadcastEvent(chatEvent);
-					return new Response();
+					return Response.json([]);
 				}
 			}
 		}
 		if (req.method === "GET") {
-			const events = await this.room.storage.get<ChatRoomClientEvent[]>(
+			const events = await this.room.storage.get<ChatRoomServerEvent[]>(
 				this.storageKey,
 			);
-			const messages =
+			const messages: ChatRoomMessageServer[] =
 				events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
-			return Response.json(messages);
+			return await this.getRoom().then((room) => {
+				if (!room) return;
+				const initData: ChatRoomInitData = { info: room, messages };
+				return Response.json(initData);
+			});
 		}
 		return new Response("No Requests");
+	}
+
+	async getRoom() {
+		try {
+			const room = this.room.context.parties.lobby.get("main");
+			const clientEvent = {
+				type: "room",
+				payload: { roomId: this.room.id },
+			} as LobbyClientEvent;
+			const API_KEY = process.env.API_KEY;
+			if (API_KEY) {
+				const res = await room.fetch("/room", {
+					headers: {
+						"X-API-KEY": API_KEY,
+					},
+					method: "POST",
+					body: JSON.stringify(clientEvent),
+				});
+				return (await res.json()) as LobbyRoom;
+			} else throw "No API-Key Defined";
+		} catch {}
 	}
 
 	async updateLobby(type: "join" | "leave", _roomId: string, user: User) {
