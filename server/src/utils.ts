@@ -17,3 +17,16 @@ export async function getUserFromContext(ctx: Party.ConnectionContext) {
 
 	return data;
 }
+
+// add helper to centralize broadcasting + serialization
+export function broadcastEvent<T>(
+	room: Party.Room,
+	ev: T,
+	conn?: Party.Connection,
+) {
+	const payload = JSON.stringify(ev);
+	console.log({ room });
+	if (conn) room.broadcast(payload, [conn.id]);
+	else room.broadcast(payload);
+	return payload;
+}

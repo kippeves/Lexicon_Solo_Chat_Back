@@ -15,7 +15,7 @@ export const ChatRoomServerEventSchema = z
 		z.object({
 			type: z.literal("leave"),
 			payload: z.object({
-				user: UserSchema,
+				userId: z.string(),
 			}),
 		}),
 	)

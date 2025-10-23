@@ -8,7 +8,7 @@ import { type RoomState, RoomStateSchema } from "../schemas/connection-state";
 import type { LobbyClientEvent } from "../schemas/lobby/client";
 import type { LobbyRoom } from "../schemas/lobbyroom";
 import type { User } from "../schemas/user";
-import { getUserFromContext } from "../utils";
+import { broadcastEvent, getUserFromContext } from "../utils";
 import ChatServer from "./base/chat-server";
 
 export default class RoomServer extends ChatServer {
@@ -21,24 +21,24 @@ export default class RoomServer extends ChatServer {
 		return `room:${this.room.id}`;
 	}
 
-	// add helper to centralize broadcasting + serialization
-	private broadcastEvent(ev: ChatRoomServerEvent, conn?: Party.Connection) {
-		const payload = JSON.stringify(ev);
-		if (conn) this.room.broadcast(payload, [conn.id]);
-		else this.room.broadcast(payload);
-		return payload;
-	}
-
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		try {
 			const user = await getUserFromContext(ctx);
 			if (!user) return;
 			await this.getInfoFromLobby().then((room) => {
 				shallowMergeConnectionState(conn, { user, room });
+				this.updateLobby("join", user);
 			});
 		} catch {
 			// ignore connect errors silently (preserve original behavior)
 		}
+	}
+
+	async onClose(_conn: Party.Connection) {
+		const state = getConnectionState(_conn);
+		if (!state) return;
+		const { user } = state;
+		if (user) this.updateLobby("leave", user);
 	}
 
 	async onMessage(message: string, sender: Party.Connection) {
@@ -82,7 +82,7 @@ export default class RoomServer extends ChatServer {
 					)) ?? [];
 				messages.push(chatEvent);
 				await this.room.storage.put(this.storageKey, messages);
-				this.broadcastEvent(chatEvent);
+				broadcastEvent(this.room, chatEvent);
 				break;
 			}
 
@@ -90,10 +90,14 @@ export default class RoomServer extends ChatServer {
 				if (isAdmin) return;
 
 				this.removeFromLobby().then((r) => {
-					if (r) this.room.storage.delete(this.storageKey);
-					this.broadcastEvent({ type: "close", payload: { admin: true } });
+					if (!r) return;
+					this.room.storage.delete(this.storageKey);
+					broadcastEvent(this.room, {
+						type: "close",
+						payload: { admin: true },
+					});
 					setTimeout(() => {
-						this.broadcastEvent({ type: "close" });
+						broadcastEvent(this.room, { type: "close" });
 					}, 1500);
 				});
 				break;
@@ -105,7 +109,7 @@ export default class RoomServer extends ChatServer {
 
 				// clear storage and notify clients
 				await this.room.storage.put(this.storageKey, []);
-				this.broadcastEvent({ type: "clear" });
+				broadcastEvent(this.room, { type: "clear" });
 				break;
 			}
 		}
@@ -150,7 +154,7 @@ export default class RoomServer extends ChatServer {
 						)) ?? [];
 					messages.push(chatEvent);
 					await this.room.storage.put(this.storageKey, messages);
-					this.broadcastEvent(chatEvent);
+					broadcastEvent(this.room, chatEvent);
 					return Response.json([]);
 				}
 			}
@@ -204,22 +208,35 @@ export default class RoomServer extends ChatServer {
 		}
 	}
 
-	async updateLobby(type: "join" | "leave", _roomId: string, user: User) {
-		const key = process.env.API_KEY;
-		try {
-			if (key)
-				await this.room.context.parties.lobby.get("main").socket({
-					credentials: "include",
-					body: JSON.stringify({
-						type,
-						payload: { user },
-					}),
-				});
-		} catch {
-			// fail silently if lobby is unavailable
-		}
+	async updateLobby(type: "join" | "leave", user: User) {
+		const API = process.env.API_KEY;
+		if (!API) return;
+
+		let event: LobbyClientEvent | undefined;
+		if (type === "join")
+			event = {
+				type,
+				payload: {
+					roomId: this.room.id,
+					user,
+				},
+			};
+		else
+			event = {
+				type,
+				payload: {
+					roomId: this.room.id,
+					userId: user.id,
+				},
+			};
+		if (!event) return;
+		const lobby = await this.room.context.parties.lobby
+			.get("main")
+			.socket({ headers: { "X-API-KEY": API } });
+		lobby.send(JSON.stringify(event));
 	}
 }
+
 function shallowMergeConnectionState(
 	connection: Party.Connection,
 	state: RoomState,

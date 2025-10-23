@@ -12,11 +12,14 @@ export default class ChatServer implements Party.Server {
 	}
 	static async onBeforeConnect(request: Party.Request, _lobby: Party.Lobby) {
 		try {
+			const API = process.env.API_KEY;
 			// get token from request query string
 			const token = new URL(request.url).searchParams.get("token");
-			if (!token) return new Response("Unauthorized", { status: 401 });
+			if (!(token || API)) return new Response("Unauthorized", { status: 401 });
 			// verify the JWT (in this case using clerk)
-			await tryDecodeToken(token);
+			if (token) {
+				await tryDecodeToken(token);
+			}
 			// forward the request onwards on onConnect
 			return request;
 		} catch {
