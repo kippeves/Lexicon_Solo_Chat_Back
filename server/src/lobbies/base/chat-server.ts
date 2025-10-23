@@ -2,6 +2,10 @@ import type * as Party from "partykit/server";
 import { tryDecodeToken } from "../../../utils";
 
 export default class ChatServer implements Party.Server {
+	options?: Party.ServerOptions = {
+		hibernate: true,
+	};
+
 	readonly room: Party.Room;
 	constructor(readonly _room: Party.Room) {
 		this.room = _room;
