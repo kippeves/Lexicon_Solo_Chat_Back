@@ -25,7 +25,6 @@ export function broadcastEvent<T>(
 	conn?: Party.Connection,
 ) {
 	const payload = JSON.stringify(ev);
-	console.log({ room });
 	if (conn) room.broadcast(payload, [conn.id]);
 	else room.broadcast(payload);
 	return payload;

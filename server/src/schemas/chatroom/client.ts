@@ -11,6 +11,11 @@ export const ChatRoomClientEventSchema = z
 	})
 	.or(
 		z.object({
+			type: z.literal("join"),
+		}),
+	)
+	.or(
+		z.object({
 			type: z.literal("clear"),
 		}),
 	)

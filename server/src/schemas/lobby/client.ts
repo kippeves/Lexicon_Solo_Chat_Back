@@ -1,5 +1,4 @@
 import z from "zod";
-import { LobbyRoomSchema } from "../lobbyroom";
 import { UserSchema } from "../user";
 
 export type LobbyClientEvent = z.infer<typeof LobbyClientEventSchema>;
@@ -7,9 +6,7 @@ export type LobbyClientEvent = z.infer<typeof LobbyClientEventSchema>;
 export const LobbyClientEventSchema = z
 	.object({
 		type: z.literal("create"),
-		payload: z.object({
-			room: LobbyRoomSchema,
-		}),
+		payload: z.object().optional(),
 	})
 	.or(
 		z.object({
@@ -29,19 +26,10 @@ export const LobbyClientEventSchema = z
 	)
 	.or(
 		z.object({
-			type: z.literal("join"),
-			payload: z.object({
-				user: UserSchema,
-				roomId: z.string(),
-			}),
-		}),
-	)
-	.or(
-		z.object({
-			type: z.literal("leave"),
+			type: z.literal("update"),
 			payload: z.object({
 				roomId: z.string(),
-				userId: z.string(),
+				users: z.array(UserSchema),
 			}),
 		}),
 	);

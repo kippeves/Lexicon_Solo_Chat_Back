@@ -1,7 +1,6 @@
 import type * as Party from "partykit/server";
 import type * as z from "zod";
 import { tryDecodeToken } from "../../utils";
-import { type UserState, UserStateSchema } from "../schemas/connection-state";
 import type { PresenceSchema } from "../schemas/messages";
 import { UserSchema } from "../schemas/user";
 import ChatServer from "./base/chat-server";
@@ -22,7 +21,7 @@ export default class UsersServer extends ChatServer {
 
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		const user = await getUserFromContext(ctx);
-		shallowMergeConnectionState(conn, { user });
+		this.shallowMergeConnectionState(conn, { user });
 		this.updateUsers();
 	}
 
@@ -41,56 +40,11 @@ export default class UsersServer extends ChatServer {
 		}
 	}
 
-	getUsers() {
-		const users = new Map<string, z.infer<typeof UserSchema>>();
-		for (const connection of this.room.getConnections()) {
-			const state = getConnectionState(connection);
-			if (state?.user) {
-				users.set(state.user.id, state.user);
-			}
-		}
-		return [...users.values()];
-	}
-
 	getPresenceMessage() {
 		return {
 			type: "presence",
 			payload: { users: this.getUsers() },
 		} satisfies Message;
-	}
-}
-
-export function shallowMergeConnectionState(
-	connection: Party.Connection,
-	state: UserState,
-) {
-	setConnectionState(connection, (prev) => ({ ...prev, ...state }));
-}
-
-export function setConnectionState(
-	connection: Party.Connection,
-	state: UserState | ((prev: UserState | null) => UserState | null),
-) {
-	if (typeof state !== "function") {
-		return connection.setState(state);
-	}
-	connection.setState((prev: unknown) => {
-		const prevParseResult = UserStateSchema.safeParse(prev);
-		if (prevParseResult.success) {
-			return state(prevParseResult.data);
-		} else {
-			return state(null);
-		}
-	});
-}
-
-export function getConnectionState(connection: Party.Connection) {
-	const result = UserStateSchema.safeParse(connection.state);
-	if (result.success) {
-		return result.data;
-	} else {
-		setConnectionState(connection, null);
-		return null;
 	}
 }
 
