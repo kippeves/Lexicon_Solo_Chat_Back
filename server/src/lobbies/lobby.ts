@@ -44,7 +44,6 @@ export default class LobbyServer extends ChatServer {
 		};
 
 		const URI = new URL(req.url);
-
 		if (req.method === "DELETE") {
 			if (URI.pathname.endsWith("/main/room")) {
 				const error = checkAPI();
