@@ -23,26 +23,66 @@ export default class LobbyServer extends ChatServer {
 	async onRequest(req: Party.Request) {
 		const env_key = process.env.API_KEY;
 
+		const checkAPI = () => {
+			const api = req.headers.get("X-API-KEY");
+			const api_same = api && api === env_key;
+			if (!api_same) return new Response("Unauthorized", { status: 401 });
+		};
+
 		const URI = new URL(req.url);
 		if (req.method === "GET") {
 			if (URI.pathname.endsWith("/rooms")) {
+				// load rooms once and return
 				const rooms =
 					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 				return Response.json(rooms);
 			}
 		}
 
-		if (req.method === "POST") {
+		if (req.method === "DELETE") {
 			if (URI.pathname.endsWith("/main/room")) {
-				const api = req.headers.get("X-API-KEY");
-				const api_same = api && api === env_key;
-				if (!api_same) return new Response("Unauthorized", { status: 401 });
+				const error = checkAPI();
+				if (error) return error;
 
+				// parse and validate once
 				const body = await req.json();
 				const item = LobbyClientEventSchema.safeParse(body);
 				if (!item.success) return new Response("No ID set", { status: 500 });
 				const { type, payload } = item.data;
 				if (type !== "room") return new Response("Bad Event");
+				const { roomId } = payload;
+
+				try {
+					// load rooms once
+					const rooms =
+						(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+					const room = rooms.find((r) => r.id === roomId);
+					// write filtered list
+					await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, [
+						...rooms.filter((r) => r.id !== roomId),
+					]);
+					return room
+						? Response.json(room)
+						: new Response("Room not found", { status: 400 });
+				} catch {
+					return new Response("Something went wrong", { status: 500 });
+				}
+			}
+		}
+
+		if (req.method === "POST") {
+			if (URI.pathname.endsWith("/main/room")) {
+				const error = checkAPI();
+				if (error) return error;
+
+				// parse and validate once
+				const body = await req.json();
+				const item = LobbyClientEventSchema.safeParse(body);
+				if (!item.success) return new Response("No ID set", { status: 500 });
+				const { type, payload } = item.data;
+				if (type !== "room") return new Response("Bad Event");
+
+				// load rooms once and return found room (no extra fetch)
 				const rooms =
 					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 				const room = rooms.find((r) => r.id === payload.roomId);
@@ -61,6 +101,8 @@ export default class LobbyServer extends ChatServer {
 					);
 				const user = payloadUser.user;
 				if (!user) return new Response("");
+
+				// load rooms once
 				const rooms =
 					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 
@@ -72,10 +114,11 @@ export default class LobbyServer extends ChatServer {
 				});
 				const newList = [...rooms, newRoom] as LobbyRoom[];
 				await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
+
+				// broadcast string, return structured JSON response efficiently
 				const update: LobbyServerEvent = { type: "create", payload: newRoom };
-				const asString = JSON.stringify(update);
-				this.room.broadcast(asString);
-				return new Response(asString);
+				this.room.broadcast(JSON.stringify(update));
+				return Response.json(update);
 			}
 		}
 		return new Response();
@@ -173,9 +216,10 @@ function setConnectionState(
 }
 
 const createId = (rooms: string[]): string => {
-	// iterative, avoids recursion
+	// use a Set for O(1) membership checks
+	const existing = new Set(rooms);
 	let id: string;
-	do {
+	while (true) {
 		const uuid = uuidv4();
 		id = uuid
 			.toUpperCase()
@@ -183,6 +227,6 @@ const createId = (rooms: string[]): string => {
 			.map((s) => s.slice(0, 2))
 			.join("")
 			.slice(0, 5);
-	} while (rooms.includes(id));
-	return id;
+		if (!existing.has(id)) return id;
+	}
 };

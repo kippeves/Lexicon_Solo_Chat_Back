@@ -22,9 +22,10 @@ export default class RoomServer extends ChatServer {
 	}
 
 	// add helper to centralize broadcasting + serialization
-	private broadcastEvent(ev: ChatRoomServerEvent) {
+	private broadcastEvent(ev: ChatRoomServerEvent, conn?: Party.Connection) {
 		const payload = JSON.stringify(ev);
-		this.room.broadcast(payload);
+		if (conn) this.room.broadcast(payload, [conn.id]);
+		else this.room.broadcast(payload);
 		return payload;
 	}
 
@@ -32,7 +33,7 @@ export default class RoomServer extends ChatServer {
 		try {
 			const user = await getUserFromContext(ctx);
 			if (!user) return;
-			await this.getRoom().then((room) => {
+			await this.getInfoFromLobby().then((room) => {
 				shallowMergeConnectionState(conn, { user, room });
 			});
 		} catch {
@@ -56,11 +57,12 @@ export default class RoomServer extends ChatServer {
 		const parseResult = ChatRoomClientEventSchema.safeParse(parsed);
 		if (!parseResult.success) return;
 		const data = parseResult.data;
-		const { type, payload } = data;
+		const { type } = data;
 		const { room, user } = state;
-
+		const isAdmin = room?.createdBy.id !== user?.id;
 		switch (type) {
 			case "message": {
+				const { payload } = data;
 				// any connected user in the room may send messages; validate payload
 				if (!payload?.message || !user) return;
 
@@ -83,9 +85,23 @@ export default class RoomServer extends ChatServer {
 				this.broadcastEvent(chatEvent);
 				break;
 			}
+
+			case "close": {
+				if (isAdmin) return;
+
+				this.removeFromLobby().then((r) => {
+					if (r) this.room.storage.delete(this.storageKey);
+					this.broadcastEvent({ type: "close", payload: { admin: true } });
+					setTimeout(() => {
+						this.broadcastEvent({ type: "close" });
+					}, 1500);
+				});
+				break;
+			}
+
 			case "clear": {
 				// only room owner can clear
-				if (room?.createdBy.id !== user?.id) return;
+				if (isAdmin) return;
 
 				// clear storage and notify clients
 				await this.room.storage.put(this.storageKey, []);
@@ -145,7 +161,7 @@ export default class RoomServer extends ChatServer {
 			);
 			const messages: ChatRoomMessageServer[] =
 				events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
-			return await this.getRoom().then((room) => {
+			return await this.getInfoFromLobby().then((room) => {
 				if (!room) return;
 				const initData: ChatRoomInitData = { info: room, messages };
 				return Response.json(initData);
@@ -154,25 +170,38 @@ export default class RoomServer extends ChatServer {
 		return new Response("No Requests");
 	}
 
-	async getRoom() {
+	private async lobbyRequest(method: "POST" | "DELETE") {
+		const API_KEY = process.env.API_KEY;
+		if (!API_KEY) throw new Error("No API-Key Defined");
+
+		const room = this.room.context.parties.lobby.get("main");
+		const clientEvent = {
+			type: "room",
+			payload: { roomId: this.room.id },
+		} as LobbyClientEvent;
+
+		const res = await room.fetch("/room", {
+			headers: { "X-API-KEY": API_KEY },
+			method,
+			body: JSON.stringify(clientEvent),
+		});
+		return (await res.json()) as LobbyRoom;
+	}
+
+	async getInfoFromLobby() {
 		try {
-			const room = this.room.context.parties.lobby.get("main");
-			const clientEvent = {
-				type: "room",
-				payload: { roomId: this.room.id },
-			} as LobbyClientEvent;
-			const API_KEY = process.env.API_KEY;
-			if (API_KEY) {
-				const res = await room.fetch("/room", {
-					headers: {
-						"X-API-KEY": API_KEY,
-					},
-					method: "POST",
-					body: JSON.stringify(clientEvent),
-				});
-				return (await res.json()) as LobbyRoom;
-			} else throw "No API-Key Defined";
-		} catch {}
+			return await this.lobbyRequest("POST");
+		} catch {
+			return undefined;
+		}
+	}
+
+	async removeFromLobby() {
+		try {
+			return await this.lobbyRequest("DELETE");
+		} catch {
+			return undefined;
+		}
 	}
 
 	async updateLobby(type: "join" | "leave", _roomId: string, user: User) {

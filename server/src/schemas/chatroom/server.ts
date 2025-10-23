@@ -29,4 +29,14 @@ export const ChatRoomServerEventSchema = z
 		z.object({
 			type: z.literal("clear"),
 		}),
+	)
+	.or(
+		z.object({
+			type: z.literal("close"),
+			payload: z
+				.object({
+					admin: z.boolean(),
+				})
+				.optional(),
+		}),
 	);
