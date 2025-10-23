@@ -104,5 +104,6 @@ async function getUserFromContext(ctx: Party.ConnectionContext) {
 		name: payload.name || payload.username,
 		avatar: payload.picture,
 	});
+
 	return data;
 }

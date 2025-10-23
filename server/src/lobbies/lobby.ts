@@ -3,13 +3,10 @@ import { v4 as uuidv4 } from "uuid";
 import { tryDecodeToken, tryGetUser } from "../../utils";
 import { type UserState, UserStateSchema } from "../schemas/connection-state";
 import { LobbyClientEventSchema } from "../schemas/lobby/client";
-import {
-	type LobbyServerEvent,
-	LobbyServerEventSchema,
-} from "../schemas/lobby/server";
+import type { LobbyServerEvent } from "../schemas/lobby/server";
 import { type LobbyRoom, LobbyRoomSchema } from "../schemas/lobbyroom";
 import type { User } from "../schemas/user";
-import { getUserFromContext } from "../utils";
+import { broadcastEvent, getUserFromContext } from "../utils";
 import ChatServer from "./base/chat-server";
 
 const ROOMS_KEY = "rooms";
@@ -116,7 +113,10 @@ export default class LobbyServer extends ChatServer {
 				await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
 
 				// broadcast string, return structured JSON response efficiently
-				const update: LobbyServerEvent = { type: "create", payload: newRoom };
+				const update: LobbyServerEvent = {
+					type: "create",
+					payload: { room: newRoom },
+				};
 				this.room.broadcast(JSON.stringify(update));
 				return Response.json(update);
 			}
@@ -126,12 +126,20 @@ export default class LobbyServer extends ChatServer {
 
 	async onMessage(message: string, _sender: Party.Connection) {
 		const obj = JSON.parse(message);
-		const { success, data } = LobbyServerEventSchema.safeParse(obj);
+		const { success, data } = await LobbyClientEventSchema.safeParseAsync(obj);
 		if (!success) return;
 		switch (data.type) {
 			case "create":
+				broadcastEvent<LobbyServerEvent>(this.room, {
+					type: "create",
+					payload: data.payload,
+				});
 				break;
 			case "close":
+				broadcastEvent<LobbyServerEvent>(this.room, {
+					type: "close",
+					payload: data.payload,
+				});
 				break;
 			case "join": {
 				this.join(data.payload);
@@ -148,46 +156,51 @@ export default class LobbyServer extends ChatServer {
 		return rooms.find((room) => room.id === roomId);
 	}
 
-	async leave({ id, roomId }: { id: string; roomId: string }) {
-		const rooms = (await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
-		const roomIndex = rooms.findIndex((room) => room.id === roomId);
-		if (roomIndex === -1) return;
-
-		const updatedRoom = {
-			...rooms[roomIndex],
-			users: rooms[roomIndex].users.filter((u) => u.id !== id),
-		};
-		const newRooms = [...rooms];
-		newRooms[roomIndex] = updatedRoom;
-		await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newRooms);
-		const message = {
-			type: "leave",
-			payload: { id, roomId },
-		} as LobbyServerEvent;
-		this.room.broadcast(JSON.stringify(message));
+	async leave({ userId, roomId }: { userId: string; roomId: string }) {
+		// remove user if present; do nothing if no change
+		await this.updateRoomUsers(roomId, (users) => {
+			if (!users.some((u) => u.id === userId)) return null; // no change
+			return users.filter((u) => u.id !== userId);
+		});
 	}
 
 	async join({ roomId, user }: { roomId: string; user: User }) {
+		// add user if not present; do nothing if already in room
+		await this.updateRoomUsers(roomId, (users) => {
+			if (users.some((u) => u.id === user.id)) return null; // no change
+			return [...users, user];
+		});
+	}
+
+	// Helper to update the users array for a room, write storage once and broadcast only on change.
+	private async updateRoomUsers(
+		roomId: string,
+		update: (prev: User[]) => User[] | null,
+	) {
 		const rooms = (await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 		const roomIndex = rooms.findIndex((room) => room.id === roomId);
 		if (roomIndex === -1) return;
 
-		// prevent duplicates
-		const existing = rooms[roomIndex].users.find((u) => u.id === user.id);
-		if (!existing) {
-			const updatedRoom = {
-				...rooms[roomIndex],
-				users: [...rooms[roomIndex].users, user],
-			};
-			const newRooms = [...rooms];
-			newRooms[roomIndex] = updatedRoom;
-			await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newRooms);
-			const message: LobbyServerEvent = {
-				type: "join",
-				payload: { user, roomId },
-			};
-			this.room.broadcast(JSON.stringify(message));
+		const prevUsers = rooms[roomIndex].users;
+		const nextUsers = update(prevUsers);
+		if (!nextUsers) return; // mutator indicates no change
+
+		// shallow equality by ids prevents unnecessary writes/broadcasts
+		if (
+			nextUsers.length === prevUsers.length &&
+			nextUsers.every((u, i) => u.id === prevUsers[i]?.id)
+		) {
+			return;
 		}
+
+		const newRooms = [...rooms];
+		newRooms[roomIndex] = { ...rooms[roomIndex], users: nextUsers };
+		await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newRooms);
+		const message: LobbyServerEvent = {
+			type: "update",
+			payload: { roomId, users: nextUsers },
+		};
+		this.room.broadcast(JSON.stringify(message));
 	}
 }
 
