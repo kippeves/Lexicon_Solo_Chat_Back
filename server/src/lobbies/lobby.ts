@@ -5,7 +5,6 @@ import { type UserState, UserStateSchema } from "../schemas/connection-state";
 import { LobbyClientEventSchema } from "../schemas/lobby/client";
 import type { LobbyServerEvent } from "../schemas/lobby/server";
 import { type LobbyRoom, LobbyRoomSchema } from "../schemas/lobbyroom";
-import type { User } from "../schemas/user";
 import { broadcastEvent, getUserFromContext } from "../utils";
 import ChatServer from "./base/chat-server";
 
@@ -15,26 +14,36 @@ export default class LobbyServer extends ChatServer {
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		const user = await getUserFromContext(ctx);
 		shallowMergeConnectionState(conn, { user });
+		const newInfo = await this.getRoomWithUsers();
+		conn.send(JSON.stringify(newInfo));
+	}
+
+	async getRoomWithUsers() {
+		// load rooms once and return
+		const rooms = (await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+		const initData = await Promise.all(
+			rooms.map(async (room) => ({
+				...room,
+				users: await (await this.getUsersForRoom(room.id)).json(),
+			})),
+		);
+		const data: LobbyServerEvent = {
+			type: "roomlist",
+			payload: { rooms: initData },
+		};
+
+		return data;
 	}
 
 	async onRequest(req: Party.Request) {
-		const env_key = process.env.API_KEY;
-
 		const checkAPI = () => {
 			const api = req.headers.get("X-API-KEY");
-			const api_same = api && api === env_key;
-			if (!api_same) return new Response("Unauthorized", { status: 401 });
+			const api_same = api === process.env.API_KEY;
+			if (api && !api_same)
+				return new Response("Unauthorized", { status: 401 });
 		};
 
 		const URI = new URL(req.url);
-		if (req.method === "GET") {
-			if (URI.pathname.endsWith("/rooms")) {
-				// load rooms once and return
-				const rooms =
-					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
-				return Response.json(rooms);
-			}
-		}
 
 		if (req.method === "DELETE") {
 			if (URI.pathname.endsWith("/main/room")) {
@@ -88,37 +97,61 @@ export default class LobbyServer extends ChatServer {
 					: new Response("Room not found", { status: 400 });
 			}
 			if (URI.pathname.endsWith("/main")) {
-				const token = req.headers.get("Authorization");
-				if (!token) return new Response("Unauthorized", { status: 401 });
-				const payload = await tryDecodeToken(token);
-				const payloadUser = await tryGetUser(payload);
-				if (!payloadUser?.success)
-					return new Response(
-						JSON.stringify({ type: "error", payload: payloadUser?.error }),
-					);
-				const user = payloadUser.user;
-				if (!user) return new Response("");
+				// parse and validate once
+				const body = await req.json();
 
-				// load rooms once
-				const rooms =
-					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+				const { success, data, error } = LobbyClientEventSchema.safeParse(body);
 
-				const id = createId(rooms.map((room) => room.id));
-				const newRoom = LobbyRoomSchema.decode({
-					id: id,
-					createdBy: user,
-					users: [],
-				});
-				const newList = [...rooms, newRoom] as LobbyRoom[];
-				await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
+				if (!success) return new Response(`Error: ${error.message}`);
 
-				// broadcast string, return structured JSON response efficiently
-				const update: LobbyServerEvent = {
-					type: "create",
-					payload: { room: newRoom },
-				};
-				this.room.broadcast(JSON.stringify(update));
-				return Response.json(update);
+				switch (data.type) {
+					case "update": {
+						const { payload } = data;
+						const event: LobbyServerEvent = {
+							type: "update",
+							payload,
+						};
+						for (const connection of this.room.getConnections()) {
+							connection.send(JSON.stringify(event));
+						}
+
+						break;
+					}
+					case "create": {
+						const token = req.headers.get("Authorization");
+						if (!token) return new Response("Unauthorized", { status: 401 });
+						const payload = await tryDecodeToken(token);
+						const payloadUser = await tryGetUser(payload);
+						if (!payloadUser?.success)
+							return new Response(
+								JSON.stringify({ type: "error", payload: payloadUser?.error }),
+							);
+						const user = payloadUser.user;
+						if (!user) return new Response("");
+
+						// load rooms once
+						const rooms =
+							(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
+
+						const id = createId(rooms.map((room) => room.id));
+						const newRoom = LobbyRoomSchema.decode({
+							id: id,
+							createdBy: user,
+							users: [],
+						});
+						const newList = [...rooms, newRoom] as LobbyRoom[];
+						await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newList);
+
+						// broadcast string, return structured JSON response efficiently
+						const update: LobbyServerEvent = {
+							type: "create",
+							payload: { room: newRoom },
+						};
+
+						this.room.broadcast(JSON.stringify(update));
+						return Response.json(update);
+					}
+				}
 			}
 		}
 		return new Response();
@@ -129,26 +162,12 @@ export default class LobbyServer extends ChatServer {
 		const { success, data } = await LobbyClientEventSchema.safeParseAsync(obj);
 		if (!success) return;
 		switch (data.type) {
-			case "create":
-				broadcastEvent<LobbyServerEvent>(this.room, {
-					type: "create",
-					payload: data.payload,
-				});
-				break;
 			case "close":
 				broadcastEvent<LobbyServerEvent>(this.room, {
 					type: "close",
 					payload: data.payload,
 				});
 				break;
-			case "join": {
-				this.join(data.payload);
-				break;
-			}
-			case "leave": {
-				this.leave(data.payload);
-				break;
-			}
 		}
 	}
 	async findRoom(roomId: string) {
@@ -156,51 +175,15 @@ export default class LobbyServer extends ChatServer {
 		return rooms.find((room) => room.id === roomId);
 	}
 
-	async leave({ userId, roomId }: { userId: string; roomId: string }) {
-		// remove user if present; do nothing if no change
-		await this.updateRoomUsers(roomId, (users) => {
-			if (!users.some((u) => u.id === userId)) return null; // no change
-			return users.filter((u) => u.id !== userId);
-		});
-	}
-
-	async join({ roomId, user }: { roomId: string; user: User }) {
-		// add user if not present; do nothing if already in room
-		await this.updateRoomUsers(roomId, (users) => {
-			if (users.some((u) => u.id === user.id)) return null; // no change
-			return [...users, user];
-		});
-	}
-
-	// Helper to update the users array for a room, write storage once and broadcast only on change.
-	private async updateRoomUsers(
-		roomId: string,
-		update: (prev: User[]) => User[] | null,
-	) {
-		const rooms = (await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
-		const roomIndex = rooms.findIndex((room) => room.id === roomId);
-		if (roomIndex === -1) return;
-
-		const prevUsers = rooms[roomIndex].users;
-		const nextUsers = update(prevUsers);
-		if (!nextUsers) return; // mutator indicates no change
-
-		// shallow equality by ids prevents unnecessary writes/broadcasts
-		if (
-			nextUsers.length === prevUsers.length &&
-			nextUsers.every((u, i) => u.id === prevUsers[i]?.id)
-		) {
-			return;
+	async getUsersForRoom(roomId: string) {
+		const apiKey = process.env.API_KEY;
+		const room = this.room.context.parties.room.get(roomId);
+		if (!apiKey || !room) {
+			throw !apiKey ? "No API-key" : "No such room found";
 		}
-
-		const newRooms = [...rooms];
-		newRooms[roomIndex] = { ...rooms[roomIndex], users: nextUsers };
-		await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, newRooms);
-		const message: LobbyServerEvent = {
-			type: "update",
-			payload: { roomId, users: nextUsers },
-		};
-		this.room.broadcast(JSON.stringify(message));
+		return await room.fetch("/users", {
+			headers: { "X-API-KEY": apiKey },
+		});
 	}
 }
 

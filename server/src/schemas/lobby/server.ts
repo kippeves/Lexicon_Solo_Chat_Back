@@ -11,6 +11,14 @@ export const LobbyServerEventSchema = z
 	})
 	.or(
 		z.object({
+			type: z.literal("roomlist"),
+			payload: z.object({
+				rooms: z.array(LobbyRoomSchema),
+			}),
+		}),
+	)
+	.or(
+		z.object({
 			type: z.literal("close"),
 			payload: z.object({
 				roomId: z.string(),

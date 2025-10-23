@@ -1,10 +1,7 @@
 import type * as Party from "partykit/server";
 import { tryDecodeToken, tryGetUser } from "../../utils";
 import { ChatRoomClientEventSchema } from "../schemas/chatroom/client";
-import type { ChatRoomInitData } from "../schemas/chatroom/init";
-import type { ChatRoomMessageServer } from "../schemas/chatroom/message/server";
 import type { ChatRoomServerEvent } from "../schemas/chatroom/server";
-import { type RoomState, RoomStateSchema } from "../schemas/connection-state";
 import type { LobbyClientEvent } from "../schemas/lobby/client";
 import type { LobbyRoom } from "../schemas/lobbyroom";
 import type { User } from "../schemas/user";
@@ -24,26 +21,27 @@ export default class RoomServer extends ChatServer {
 	async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
 		try {
 			const user = await getUserFromContext(ctx);
-			if (!user) return;
-			await this.getInfoFromLobby().then((room) => {
-				shallowMergeConnectionState(conn, { user, room });
-				this.updateLobby("join", user);
-			});
+			this.shallowMergeConnectionState(conn, { user });
+			this.updateLobby();
 		} catch {
 			// ignore connect errors silently (preserve original behavior)
 		}
 	}
 
 	async onClose(_conn: Party.Connection) {
-		const state = getConnectionState(_conn);
-		if (!state) return;
-		const { user } = state;
-		if (user) this.updateLobby("leave", user);
+		const ids = [];
+		for (const conn of this.room.getConnections()) {
+			ids.push(conn.id);
+		}
+
+		this.updateLobby();
 	}
 
 	async onMessage(message: string, sender: Party.Connection) {
-		const state = getConnectionState(sender);
+		const state = this.getConnectionState(sender);
 		if (!state) return;
+		const room = await this.getInfoFromLobby();
+		if (!room) return;
 
 		// parse safely
 		let parsed: unknown;
@@ -58,9 +56,12 @@ export default class RoomServer extends ChatServer {
 		if (!parseResult.success) return;
 		const data = parseResult.data;
 		const { type } = data;
-		const { room, user } = state;
-		const isAdmin = room?.createdBy.id !== user?.id;
+		const { user } = state;
+		const isAdmin = room.createdBy.id !== user?.id;
 		switch (type) {
+			case "join":
+				this.updateLobby();
+				break;
 			case "message": {
 				const { payload } = data;
 				// any connected user in the room may send messages; validate payload
@@ -115,63 +116,85 @@ export default class RoomServer extends ChatServer {
 		}
 	}
 
-	async onRequest(req: Party.Request) {
+	private async authenticateRequest(req: Party.Request) {
+		const API = req.headers.get("X-API-KEY");
 		const token = req.headers.get("Authorization");
-		if (!token) return new Response();
+
+		if (API) return { success: true as const };
+		if (!token) return { success: false as const };
+
 		const payload = await tryDecodeToken(token);
 		const payloadUser = await tryGetUser(payload);
-		if (!payloadUser?.success) {
-			const error = payloadUser?.error;
-			return new Response(error?.message);
+
+		return {
+			success: Boolean(payloadUser?.success) as true,
+			user: payloadUser?.user,
+		};
+	}
+
+	private async handlePost(req: Party.Request, user: User) {
+		const body = await req.json();
+		const result = ChatRoomClientEventSchema.safeParse(body);
+		if (!result.success)
+			return new Response("Invalid request body", { status: 400 });
+
+		const { type } = result.data;
+		if (type !== "message" || !result.data.payload?.message) {
+			return new Response("Invalid message", { status: 400 });
 		}
-		const user = payloadUser.user;
-		if (!user) return new Response("User could not be found");
 
-		if (req.method === "POST") {
-			const body = await req.json();
-			const { success, data } = ChatRoomClientEventSchema.safeParse(body);
-			if (!success) return new Response();
+		const chatEvent: ChatRoomServerEvent = {
+			type: "message",
+			payload: {
+				user,
+				sent: new Date(),
+				message: result.data.payload.message,
+			},
+		};
 
-			const { type } = data;
-			switch (type) {
-				case "message": {
-					const { payload } = data;
-					// validate payload message
-					if (!payload?.message) return new Response();
+		const messages =
+			(await this.room.storage.get<ChatRoomServerEvent[]>(this.storageKey)) ??
+			[];
+		messages.push(chatEvent);
+		await this.room.storage.put(this.storageKey, messages);
+		broadcastEvent(this.room, chatEvent);
+		return Response.json({ success: true });
+	}
 
-					const chatEvent: ChatRoomServerEvent = {
-						type: "message",
-						payload: {
-							user: user,
-							sent: new Date(),
-							message: payload.message,
-						},
-					};
+	private async handleGet() {
+		const events = await this.room.storage.get<ChatRoomServerEvent[]>(
+			this.storageKey,
+		);
+		const messages =
+			events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
+		const room = await this.getInfoFromLobby();
 
-					const messages =
-						(await this.room.storage.get<ChatRoomServerEvent[]>(
-							this.storageKey,
-						)) ?? [];
-					messages.push(chatEvent);
-					await this.room.storage.put(this.storageKey, messages);
-					broadcastEvent(this.room, chatEvent);
-					return Response.json([]);
-				}
+		if (!room) return new Response("Room not found", { status: 404 });
+
+		return Response.json({ info: room, messages });
+	}
+
+	async onRequest(req: Party.Request) {
+		const auth = await this.authenticateRequest(req);
+		if (!auth.success) return new Response("Unauthorized", { status: 401 });
+		const URI = new URL(req.url);
+		try {
+			switch (req.method) {
+				case "POST":
+					if (!auth.user)
+						return new Response("User not found", { status: 401 });
+					return await this.handlePost(req, auth.user);
+				case "GET":
+					if (URI.pathname.endsWith("/users")) {
+						return Response.json(this.getUsers());
+					}
+					return await this.handleGet();
+				default:
+					return new Response("Method not allowed", { status: 405 });
 			}
+		} catch {
+			return new Response("Internal server error", { status: 500 });
 		}
-		if (req.method === "GET") {
-			const events = await this.room.storage.get<ChatRoomServerEvent[]>(
-				this.storageKey,
-			);
-			const messages: ChatRoomMessageServer[] =
-				events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
-			return await this.getInfoFromLobby().then((room) => {
-				if (!room) return;
-				const initData: ChatRoomInitData = { info: room, messages };
-				return Response.json(initData);
-			});
-		}
-		return new Response("No Requests");
 	}
 
 	private async lobbyRequest(method: "POST" | "DELETE") {
@@ -208,65 +231,22 @@ export default class RoomServer extends ChatServer {
 		}
 	}
 
-	async updateLobby(type: "join" | "leave", user: User) {
+	async updateLobby() {
 		const API = process.env.API_KEY;
 		if (!API) return;
 
-		let event: LobbyClientEvent | undefined;
-		if (type === "join")
-			event = {
-				type,
-				payload: {
-					roomId: this.room.id,
-					user,
-				},
-			};
-		else
-			event = {
-				type,
-				payload: {
-					roomId: this.room.id,
-					userId: user.id,
-				},
-			};
+		const event: LobbyClientEvent = {
+			type: "update",
+			payload: {
+				roomId: this.room.id,
+				users: this.getUsers(),
+			},
+		};
 		if (!event) return;
-		const lobby = await this.room.context.parties.lobby
-			.get("main")
-			.socket({ headers: { "X-API-KEY": API } });
-		lobby.send(JSON.stringify(event));
-	}
-}
-
-function shallowMergeConnectionState(
-	connection: Party.Connection,
-	state: RoomState,
-) {
-	setConnectionState(connection, (prev) => ({ ...prev, ...state }));
-}
-
-function setConnectionState(
-	connection: Party.Connection,
-	state: RoomState | ((prev: RoomState | null) => RoomState | null),
-) {
-	if (typeof state !== "function") {
-		return connection.setState(state);
-	}
-	connection.setState((prev: unknown) => {
-		const prevParseResult = RoomStateSchema.safeParse(prev);
-		if (prevParseResult.success) {
-			return state(prevParseResult.data);
-		} else {
-			return state(null);
-		}
-	});
-}
-
-function getConnectionState(connection: Party.Connection) {
-	const result = RoomStateSchema.safeParse(connection.state);
-	if (result.success) {
-		return result.data;
-	} else {
-		setConnectionState(connection, null);
-		return null;
+		await this.room.context.parties.lobby.get("main").fetch({
+			method: "POST",
+			headers: { "X-API-KEY": API },
+			body: JSON.stringify(event),
+		});
 	}
 }
