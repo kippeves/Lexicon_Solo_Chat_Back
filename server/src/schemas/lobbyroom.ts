@@ -6,5 +6,4 @@ export const LobbyRoomSchema = z.object({
 	createdBy: UserSchema,
 	users: z.array(UserSchema),
 });
-
 export type LobbyRoom = z.infer<typeof LobbyRoomSchema>;
