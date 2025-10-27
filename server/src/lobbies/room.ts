@@ -162,6 +162,7 @@ export default class RoomServer extends ChatServer {
 	}
 
 	private async handleGet() {
+		await this.room.storage.sync();
 		const events = await this.room.storage.get<ChatRoomServerEvent[]>(
 			this.storageKey,
 		);
