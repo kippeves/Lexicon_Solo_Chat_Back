@@ -155,7 +155,7 @@ export default class RoomServer extends ChatServer {
 		const messages =
 			(await this.room.storage.get<ChatRoomServerEvent[]>(this.storageKey)) ??
 			[];
-		messages.push(chatEvent);
+
 		await this.room.storage.put(this.storageKey, [...messages, chatEvent], {
 			allowConcurrency: false,
 		});
