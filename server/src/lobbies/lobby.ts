@@ -66,6 +66,17 @@ export default class LobbyServer extends ChatServer {
 					await this.room.storage.put<LobbyRoom[]>(ROOMS_KEY, [
 						...rooms.filter((r) => r.id !== roomId),
 					]);
+
+					if (room) {
+						// broadcast string, return structured JSON response efficiently
+						const update: LobbyServerEvent = {
+							type: "close",
+							payload: { roomId: room?.id },
+						};
+
+						this.room.broadcast(JSON.stringify(update));
+					}
+
 					return room
 						? Response.json(room)
 						: new Response("Room not found", { status: 400 });
@@ -91,6 +102,7 @@ export default class LobbyServer extends ChatServer {
 				const rooms =
 					(await this.room.storage.get<LobbyRoom[]>(ROOMS_KEY)) ?? [];
 				const room = rooms.find((r) => r.id === payload.roomId);
+
 				return room
 					? Response.json(room)
 					: new Response("Room not found", { status: 400 });
