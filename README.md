@@ -96,7 +96,6 @@ Contributions are welcome! Please fork the repository and submit a pull request.
 ## 📧 Support
 
 For help or questions, reach out via:
-- [Discord](https://discord.gg/g5uqHQJc3z)
 - [GitHub Issues](https://github.com/kippeves/lexicon_solo_chat_back/issues)
 
 ## 📝 License
