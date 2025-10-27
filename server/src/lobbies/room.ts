@@ -168,6 +168,7 @@ export default class RoomServer extends ChatServer {
 		const events = await this.room.storage.get<ChatRoomServerEvent[]>(
 			this.storageKey,
 		);
+		console.log({ events });
 		const messages =
 			events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
 		const room = await this.getInfoFromLobby();
@@ -191,6 +192,7 @@ export default class RoomServer extends ChatServer {
 					if (URI.pathname.endsWith("/users")) {
 						return Response.json(this.getUsers());
 					}
+					console.log(URI.href);
 					return await this.handleGet();
 				default:
 					return new Response("Method not allowed", { status: 405 });
