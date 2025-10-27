@@ -165,20 +165,23 @@ export default class RoomServer extends ChatServer {
 	}
 
 	private async handleGet() {
+		const room = await this.getInfoFromLobby();
+		if (!room) return new Response("Room not found", { status: 404 });
+
 		const events = await this.room.storage.get<ChatRoomServerEvent[]>(
 			this.storageKey,
 		);
-		console.log({ events });
+
+		if (!events) await this.room.storage.put(this.storageKey, []);
+
 		const messages =
 			events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
-		const room = await this.getInfoFromLobby();
-		console.log(messages);
-		if (!room) return new Response("Room not found", { status: 404 });
 
 		return Response.json({ info: room, messages });
 	}
 
 	async onRequest(req: Party.Request) {
+		console.log(req.url);
 		const auth = await this.authenticateRequest(req);
 		if (!auth.success) return new Response("Unauthorized", { status: 401 });
 		const URI = new URL(req.url);
