@@ -156,20 +156,22 @@ export default class RoomServer extends ChatServer {
 			(await this.room.storage.get<ChatRoomServerEvent[]>(this.storageKey)) ??
 			[];
 		messages.push(chatEvent);
-		await this.room.storage.put(this.storageKey, messages);
+		await this.room.storage.put(this.storageKey, [...messages, chatEvent], {
+			allowConcurrency: false,
+		});
+		await this.room.storage.sync();
 		broadcastEvent(this.room, chatEvent);
 		return Response.json({ success: true });
 	}
 
 	private async handleGet() {
-		await this.room.storage.sync();
 		const events = await this.room.storage.get<ChatRoomServerEvent[]>(
 			this.storageKey,
 		);
 		const messages =
 			events?.filter((e) => e.type === "message").map((e) => e.payload) ?? [];
 		const room = await this.getInfoFromLobby();
-
+		console.log(messages);
 		if (!room) return new Response("Room not found", { status: 404 });
 
 		return Response.json({ info: room, messages });
